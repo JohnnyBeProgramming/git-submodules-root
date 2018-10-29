@@ -1,0 +1,264 @@
+#!/usr/bin/env bash
+# -----------------------------------------------------------------------------
+set -o errexit
+set -o nounset
+set -o pipefail
+
+THIS_DIR=`dirname $0`
+
+# -----------------------------------------------------------------------------
+# Declare functions
+# -----------------------------------------------------------------------------
+
+function display_help() {
+    echo
+    echo "Usage: $0 [ Options ] [ <target> ]"
+    echo ""
+	echo "Options:"
+	echo "  -h              Display this help section."
+	echo "  -g <target>     Initialise git repositories."
+	echo "  -m <target>     Initialise a docker machine."
+	echo "  -r <remote>     Specify the remote server IP."
+	echo "  -p <port>       Remote docker TLS port number."
+	echo "  -v <version>    Set the docker machine version."
+	echo ""
+}
+
+function parse_args() {
+    local OPTIND=1
+    while getopts ":hm:p:v:r:" opt; do
+    case $opt in
+      h)
+        display_help
+        exit 1
+        ;;
+      g)
+        TARGET_DIR=$OPTARG
+        ;;
+      m)
+        DOCKER_MACHINE=$OPTARG
+        ;;
+      p)
+        REMOTE_PORT=$OPTARG
+        ;;
+      v)
+        DOCKER_MACHINE_VERSION=$OPTARG
+        ;;
+      r)
+        DOCKER_MACHINE=${DOCKER_MACHINE:-.}
+        DOCKER_MACHINE_REMOTE=$OPTARG
+        ;;
+      \?)
+        echo "Invalid option: -$OPTARG" >&2
+        ;;
+      :)
+        echo "Option -$OPTARG requires an argument." >&2
+        exit 1
+        ;;
+    esac
+    done
+    shift $((OPTIND - 1))
+
+    # Define the defaults for all variables
+    CHECK_ONLINE=${CHECK_ONLINE:-Y}
+    TARGET_DIR=${TARGET_DIR:-.}
+    DOCKER_MACHINE_VERSION=${DOCKER_MACHINE_VERSION:-1.11.2}
+
+    # Override target dir (if specified)
+    if [ "${TARGET_DIR}" == "." ] && [ ! "${1:-}" == "" ] && [ -d "${1}" ]
+    then
+        TARGET_DIR=${1}
+    fi
+}
+
+function run() {
+    parse_args "$@"
+    define_colors
+
+    if [ ! "${DOCKER_MACHINE:-}" == "" ]
+    then
+        init_machine "${DOCKER_MACHINE}"
+    else
+        init_repo "${GIT_TARGET_REPOS:-}"
+    fi
+}
+
+function init_machine() {
+    local target=${1:-}
+
+	echo "-------------------------------------------------------------------------------"
+	echo "Initialising '${BRIGHT}${MAGENTA}${target}${NORMAL}'..."
+	echo "-------------------------------------------------------------------------------"
+
+    # Define the host machine (if not exists
+    if [ ! "${DOCKER_MACHINE_VERSION}" == "" ]
+    then
+        DOCKER_ISO="https://github.com/boot2docker/boot2docker/releases/download/v${DOCKER_MACHINE_VERSION}/boot2docker.iso"
+    else
+        DOCKER_ISO=
+    fi
+
+    # Make sure the VM exists (if not localhost)
+    if [ ! "${target}" == "." ] && [ ! "${target}" == "local" ]
+    then
+        docker_define_host "${target}"
+    else
+        target="."
+    fi
+
+    # Select the target host machine
+    if [ "${DOCKER_MACHINE_REMOTE:-}" == "" ]
+    then
+        ${THIS_DIR}/utils/select "${target}"
+    else
+        ${THIS_DIR}/utils/select -p ${REMOTE_PORT:-2375} -r "${DOCKER_MACHINE_REMOTE}" "${target}"
+    fi
+
+    echo "-------------------------------------------------------------------------------"
+}
+
+function init_repo() {
+    local target=$(pwd ${TARGET_DIR})
+
+	echo "-------------------------------------------------------------------------------"
+	echo "Initialising '${BRIGHT}${BLUE}${RIA_PRODUCT_NAME:-common}${NORMAL}' => '${BRIGHT}${MAGENTA}${target}${NORMAL}'..."
+	echo "-------------------------------------------------------------------------------"
+
+    # Ensure that target specified
+    if [ "${TARGET_DIR}" == "" ] || [ "${TARGET_DIR}" == "." ]; then
+        init_folder "."
+    elif [ "${TARGET_DIR}" == "all" ]; then
+        init_folder "."
+        init_folder "apps"
+        init_folder "modules"
+        init_folder "services"
+        init_folder "tests"
+        init_folder "utils"
+    elif [ -d "${TARGET_DIR}" ]; then
+        init_folder "."
+        init_folder "${TARGET_DIR}"
+    else
+      display_help
+      exit 1
+    fi
+
+	echo "-------------------------------------------------------------------------------"
+}
+
+init_git_sources() {
+  printf "Init submodules...${GRAY}\n"
+  git submodule init
+  printf "${NORMAL}"
+
+  if [ "${CHECK_ONLINE}" == "Y" ]
+  then
+      printf "Updating submodules...${GRAY}\n"
+      git submodule update --remote > /dev/null
+      printf "${NORMAL}"
+  fi
+
+  printf "Switching branches...${GRAY}\n"
+  git submodule foreach -q --recursive '\
+    branch="$(git config -f $toplevel/.gitmodules submodule.$name.branch)"; \
+    echo " - ${BRIGHT}${BLUE}${name}${NORMAL} [ ${BRIGHT}${MAGENTA}${branch:-<not set>}${NORMAL} ]"; \
+    git checkout --quiet ${branch}\
+  '
+  printf "${NORMAL}"
+}
+
+init_folder() {
+  pushd ${1} > /dev/null
+  init_git_sources \
+    || echo "Init Failed: ${1}"
+  popd > /dev/null
+}
+
+
+function define_colors() {
+	# Check if we should disable terminal colors (relevant for build servers and dumb terminals)
+	HAS_COLOR=${HAS_COLOR:-Y}
+	if [ "${TERM:-}" == "" ] || [ "${TERM:-}" == "dumb" ]
+	then
+		HAS_COLOR=
+	fi
+
+    if test -t 1; then
+        BLACK=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 0)
+        RED=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 1)
+        GREEN=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 2)
+        YELLOW=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 3)
+        LIME_YELLOW=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 190)
+        POWDER_BLUE=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 153)
+        BLUE=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 4)
+        MAGENTA=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 5)
+        CYAN=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 6)
+        WHITE=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 7)
+        GRAY=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 8)
+        BRIGHT=$([ ! "${HAS_COLOR}" == "Y" ] || tput bold)
+        NORMAL=$([ ! "${HAS_COLOR}" == "Y" ] || tput sgr0)
+        REVERSE=$([ ! "${HAS_COLOR}" == "Y" ] || tput smso)
+        UNDERLINE=$([ ! "${HAS_COLOR}" == "Y" ] || tput smul)
+    else
+        BLACK=""
+        RED=""
+        GREEN=""
+        YELLOW=""
+        LIME_YELLOW=""
+        POWDER_BLUE=""
+        BLUE=""
+        MAGENTA=""
+        CYAN=""
+        WHITE=""
+        GRAY=""
+        BRIGHT=""
+        NORMAL=""
+        REVERSE=""
+        UNDERLINE=""
+    fi
+}
+
+function timed () {
+    # Reset timer
+    SECONDS=0
+    SUCCESS=Y
+
+    # Execute main run
+    eval $@ && SUCCESS=Y || SUCCESS=N
+
+    # Calculate elapsed time
+    num=${SECONDS}
+    min=0
+    hour=0
+    day=0
+    if((num>59));then
+        ((sec=num%60))
+        ((num=num/60))
+        if((num>59));then
+            ((min=num%60))
+            ((num=num/60))
+            if((num>23));then
+                ((hour=num%24))
+                ((day=num/24))
+            else
+                ((hour=num))
+            fi
+        else
+            ((min=num))
+        fi
+    else
+        ((sec=num))
+    fi
+
+    local formatted=""
+    [ "${sec}" == "0" ] || formatted="${sec} seconds"
+    [ "${min}" == "0" ] || formatted="${min} mins, ${formatted}"
+    [ "${day}" == "0" ] || formatted="${day} days, ${formatted}"
+    [ "${formatted}"=="" ] || formatted=", (${num})"
+    [ "${SUCCESS}" == "Y" ] && state="${GREEN}SUCCESS${NORMAL}" || state="${RED}FAILED${NORMAL}"
+    printf "${GRAY} « [ ${BRIGHT}${state}${GRAY} ] ${BRIGHT}${MAGENTA}${formatted:-0s}${NORMAL}${GRAY} « ${BRIGHT}${POWDER_BLUE}${0}${NORMAL}${GRAY} \n"
+}
+
+# ---------------------------------------------------------------------
+# Bootstrap the script
+# ---------------------------------------------------------------------
+timed run "$@"

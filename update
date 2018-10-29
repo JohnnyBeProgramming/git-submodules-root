@@ -1,0 +1,284 @@
+#!/usr/bin/env bash
+# -----------------------------------------------------------------------------
+set -o errexit
+set -o nounset
+set -o pipefail
+
+THIS_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# -----------------------------------------------------------------------------
+# Declare functions
+# -----------------------------------------------------------------------------
+
+function display_help() {
+    echo
+    echo "Usage: $0 [ Options ]"
+    echo ""
+	echo "Options:"
+	echo "  -h          	Display this help section."
+	echo "  -x   			Check online for updates (does a git update)."
+	echo ""
+}
+
+function parse_args() {
+    local OPTIND=1
+    while getopts ":hx" opt; do
+    case $opt in
+      h)
+        display_help
+        exit 1
+        ;;
+      x)
+        CHECK_ONLINE=Y
+        ;;
+      \?)
+        echo "Invalid option: -$OPTARG" >&2
+        ;;
+      :)
+        echo "Option -$OPTARG requires an argument." >&2
+        exit 1
+        ;;
+    esac
+    done
+    shift $((OPTIND - 1))
+
+	# Include the library of common functions
+	THIS_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+    # Define the defaults for all variables
+    TARGET_DIR=${1:-.}
+    CHECK_ONLINE=${CHECK_ONLINE:-Y}
+
+}
+
+
+function define_colors() {
+	# Check if we should disable terminal colors (relevant for build servers and dumb terminals)
+	HAS_COLOR=${HAS_COLOR:-Y}
+	if [ "${TERM:-}" == "" ] || [ "${TERM:-}" == "dumb" ]
+	then
+		HAS_COLOR=
+	fi
+
+	BLACK=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 0)
+	RED=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 1)
+	GREEN=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 2)
+	YELLOW=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 3)
+	LIME_YELLOW=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 190)
+	POWDER_BLUE=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 153)
+	BLUE=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 4)
+	MAGENTA=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 5)
+	CYAN=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 6)
+	WHITE=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 7)
+	GRAY=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 8)
+	BRIGHT=$([ ! "${HAS_COLOR}" == "Y" ] || tput bold)
+	NORMAL=$([ ! "${HAS_COLOR}" == "Y" ] || tput sgr0)
+	BLINK=$([ ! "${HAS_COLOR}" == "Y" ] || tput blink)
+	REVERSE=$([ ! "${HAS_COLOR}" == "Y" ] || tput smso)
+	UNDERLINE=$([ ! "${HAS_COLOR}" == "Y" ] || tput smul)
+}
+
+function run() {
+    parse_args "$@"
+    define_colors
+
+	echo "-------------------------------------------------------------------------------"
+	echo "Updating all sources..."
+	echo "-------------------------------------------------------------------------------"
+
+	git_checkout_recursive "${1:-.}"
+
+	echo "-------------------------------------------------------------------------------"
+	echo "${BRIGHT}${GREEN}Everything is up to date.${NORMAL}"
+	echo "-------------------------------------------------------------------------------"
+}
+
+function git_has_changes () {
+    git rev-parse --verify HEAD >/dev/null || exit 1
+    git update-index -q --ignore-submodules --refresh
+    err=0
+    if git diff-files --quiet --ignore-submodules
+    then
+        err=1
+    fi
+    return $err
+}
+
+function git_has_commits () {
+    err=0
+    if git diff-index --cached --quiet --ignore-submodules HEAD --
+    then
+        err=1
+    fi
+    return $err
+}
+
+function check_git_status() {
+	local space=${1:-}
+	local path=${PWD##*/}
+	local branch=
+	local comment=
+
+	if [ -d ".git" ] || [ -f ".git" ]
+	then
+		branch=`git rev-parse --abbrev-ref HEAD`
+		comment=`git log --oneline -1`
+
+		if git_has_changes; then
+			path="${BRIGHT}${RED}${path}${NORMAL}"
+			comment="${BRIGHT}${YELLOW}Skipping, local changes were detected..."
+			branch="${BRIGHT}${RED}${branch}${NORMAL}"
+		elif git_has_commits; then
+			path="${BRIGHT}${YELLOW}${path}${NORMAL}"
+			comments="Found local commits to push..."
+			branch="${BRIGHT}${LIME_YELLOW}${branch}${NORMAL}"
+		else
+			comments="Updating..."
+
+			git fetch origin --quiet &>/dev/null
+			LOCAL=$(git rev-parse @ 2>/dev/null)
+			REMOTE=$(git rev-parse @{u} 2>/dev/null)
+			BASE=$(git merge-base @ @{u} 2>/dev/null)
+
+			if [ "$LOCAL" == "$REMOTE" ]; then
+				# Up-to-date
+				path="${BRIGHT}${BLUE}${path}${NORMAL}"
+				branch="${BRIGHT}${POWDER_BLUE}${branch}${NORMAL}"
+				comment="${GRAY}Up to date.${NORMAL}"
+			elif [ "$LOCAL" == "$BASE" ]; then
+				# Need to pull
+				git pull &> /dev/null
+				path="${BRIGHT}${GREEN}${path}${NORMAL}"
+				branch="${BRIGHT}${GREEN}${branch}${NORMAL}"
+				comment="${WHITE}`git log --oneline -1`${NORMAL}"
+			elif [ "$REMOTE" == "$BASE" ]; then
+				# Need to push
+				#git push &> /dev/null
+				path="${BRIGHT}${MAGENTA}${path}${NORMAL}"
+				branch="${MAGENTA}${branch}${NORMAL}"
+				comment="${MAGENTA}Push changes...${NORMAL}"
+			else
+				# Diverged
+				path="${BRIGHT}${RED}${path}${NORMAL}"
+				branch="${BRIGHT}${RED}${branch}${NORMAL}"
+				comment="Diverged from 'origin'..."
+			fi
+
+		fi
+
+		branch="[ ${UNDERLINE}${branch}${NORMAL} ]"
+	else
+		path="${WHITE}${PWD##*/}${NORMAL}"
+	fi
+
+	# set colors
+
+	comment="${GRAY}${comment}${NORMAL}"
+
+	echo "${space} + ${path} ${branch} ${comment}"
+}
+
+function git_checkout_recursive() {
+	local path=${1:-.}
+	local space=${2:-}
+
+	pushd "${path}" > /dev/null
+	check_git_status "${space}" || echo "Error: ${path}"
+	for item in `find . -mindepth 1 -maxdepth 2 -type d -not -path '*/\.*'`
+	do
+		if [ -d "${item}/.git" ] || [ -f "${item}/.git" ] || [ -f ".submodules" ];
+		then
+			git_checkout_recursive "${item}" "  ${space}" || echo "Error: ${path}"
+		fi
+	done
+	popd > /dev/null
+}
+
+function define_colors() {
+	# Check if we should disable terminal colors (relevant for build servers and dumb terminals)
+	HAS_COLOR=${HAS_COLOR:-Y}
+	if [ "${TERM:-}" == "" ] || [ "${TERM:-}" == "dumb" ]
+	then
+		HAS_COLOR=
+	fi
+
+    if test -t 1; then
+        BLACK=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 0)
+        RED=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 1)
+        GREEN=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 2)
+        YELLOW=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 3)
+        LIME_YELLOW=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 190)
+        POWDER_BLUE=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 153)
+        BLUE=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 4)
+        MAGENTA=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 5)
+        CYAN=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 6)
+        WHITE=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 7)
+        GRAY=$([ ! "${HAS_COLOR}" == "Y" ] || tput setaf 8)
+        BRIGHT=$([ ! "${HAS_COLOR}" == "Y" ] || tput bold)
+        NORMAL=$([ ! "${HAS_COLOR}" == "Y" ] || tput sgr0)
+        REVERSE=$([ ! "${HAS_COLOR}" == "Y" ] || tput smso)
+        UNDERLINE=$([ ! "${HAS_COLOR}" == "Y" ] || tput smul)
+    else
+        BLACK=""
+        RED=""
+        GREEN=""
+        YELLOW=""
+        LIME_YELLOW=""
+        POWDER_BLUE=""
+        BLUE=""
+        MAGENTA=""
+        CYAN=""
+        WHITE=""
+        GRAY=""
+        BRIGHT=""
+        NORMAL=""
+        REVERSE=""
+        UNDERLINE=""
+    fi
+}
+
+function timed () {
+    # Reset timer
+    SECONDS=0
+    SUCCESS=Y
+
+    # Execute main run
+    eval $@ && SUCCESS=Y || SUCCESS=N
+
+    # Calculate elapsed time
+    num=${SECONDS}
+    min=0
+    hour=0
+    day=0
+    if((num>59));then
+        ((sec=num%60))
+        ((num=num/60))
+        if((num>59));then
+            ((min=num%60))
+            ((num=num/60))
+            if((num>23));then
+                ((hour=num%24))
+                ((day=num/24))
+            else
+                ((hour=num))
+            fi
+        else
+            ((min=num))
+        fi
+    else
+        ((sec=num))
+    fi
+
+    local formatted=""
+    [ "${sec}" == "0" ] || formatted="${sec} seconds"
+    [ "${min}" == "0" ] || formatted="${min} mins, ${formatted}"
+    [ "${day}" == "0" ] || formatted="${day} days, ${formatted}"
+    [ "${formatted}"=="" ] || formatted=", (${num})"
+    [ "${SUCCESS}" == "Y" ] && state="${GREEN}SUCCESS${NORMAL}" || state="${RED}FAILED${NORMAL}"
+    printf "${GRAY} « [ ${BRIGHT}${state}${GRAY} ] ${BRIGHT}${MAGENTA}${formatted:-0s}${NORMAL}${GRAY} « ${BRIGHT}${POWDER_BLUE}${0}${NORMAL}${GRAY} \n"
+}
+
+# ---------------------------------------------------------------------
+# Bootstrap the script
+# ---------------------------------------------------------------------
+timed run "$@"
